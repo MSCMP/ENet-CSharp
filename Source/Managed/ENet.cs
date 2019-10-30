@@ -32,11 +32,22 @@ namespace ENet {
 	[Flags]
 	public enum PacketFlags {
 		None = 0,
+		/// <summary>
+		/// Packet must be received by the target peer and resend attempts should be made until the packet is delivered.
+		/// </summary>
 		Reliable = 1 << 0,
+		/// <summary>
+		/// Packet will not be sequenced with other packets not supported for reliable packets.
+		/// </summary>
 		Unsequenced = 1 << 1,
+		/// <summary>
+		/// Packet will not allocate data, and user must supply it instead.
+		/// </summary>
 		NoAllocate = 1 << 2,
+		/// <summary>
+		/// Packet will be fragmented using unreliable (instead of reliable) sends if it exceeds the MTU.
+		/// </summary>
 		UnreliableFragmented = 1 << 3,
-		Instant = 1 << 4
 	}
 
 	public enum EventType {
@@ -64,8 +75,9 @@ namespace ENet {
 	[StructLayout(LayoutKind.Sequential)]
 	internal struct ENetAddress {
 		[MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
-		public byte[] ip;
+		public byte[] host;
 		public ushort port;
+		public ushort sin6_scope_id;
 	}
 
 	[StructLayout(LayoutKind.Sequential)]
@@ -110,7 +122,7 @@ namespace ENet {
 		}
 	}
 
-	public struct Address {
+	public class Address {
 		private ENetAddress nativeAddress;
 
 		internal ENetAddress NativeData {
@@ -121,6 +133,9 @@ namespace ENet {
 			set {
 				nativeAddress = value;
 			}
+		}
+
+		public Address() {
 		}
 
 		internal Address(ENetAddress address) {
@@ -138,35 +153,35 @@ namespace ENet {
 		}
 
 		public string GetIP() {
-			StringBuilder ip = new StringBuilder(1025);
+			byte[] ip = new byte[1025];
 
-			if (Native.enet_address_get_ip(nativeAddress, ip, (IntPtr)ip.Capacity) != 0)
-				return String.Empty;
+			if (Native.enet_address_get_host_ip(nativeAddress, ip, (IntPtr)ip.Length) != 0)
+				return string.Empty;
 
-			return ip.ToString();
+			return Encoding.ASCII.GetString(ip, 0, ip.StringLength());
 		}
 
 		public bool SetIP(string ip) {
 			if (ip == null)
 				throw new ArgumentNullException("ip");
 
-			return Native.enet_address_set_ip(ref nativeAddress, ip) == 0;
+			return Native.enet_address_set_host_ip(ref nativeAddress, ip) == 0;
 		}
 
 		public string GetHost() {
-			StringBuilder hostName = new StringBuilder(1025);
+			byte[] host = new byte[1025];
 
-			if (Native.enet_address_get_hostname(nativeAddress, hostName, (IntPtr)hostName.Capacity) != 0)
+			if (Native.enet_address_get_host(nativeAddress, host, (IntPtr)host.Length) != 0)
 				return String.Empty;
 
-			return hostName.ToString();
+			return Encoding.ASCII.GetString(host, 0, host.StringLength());
 		}
 
 		public bool SetHost(string hostName) {
 			if (hostName == null)
 				throw new ArgumentNullException("hostName");
 
-			return Native.enet_address_set_hostname(ref nativeAddress, hostName) == 0;
+			return Native.enet_address_set_host(ref nativeAddress, hostName) == 0;
 		}
 	}
 
@@ -257,7 +272,7 @@ namespace ENet {
 
 		public void Dispose() {
 			if (nativePacket != IntPtr.Zero) {
-				Native.enet_packet_dispose(nativePacket);
+				Native.enet_packet_destroy(nativePacket);
 				nativePacket = IntPtr.Zero;
 			}
 		}
@@ -281,14 +296,6 @@ namespace ENet {
 				CheckCreated();
 
 				return Native.enet_packet_get_length(nativePacket);
-			}
-		}
-
-		public bool HasReferences {
-			get {
-				CheckCreated();
-
-				return Native.enet_packet_check_references(nativePacket) != 0;
 			}
 		}
 
@@ -465,11 +472,11 @@ namespace ENet {
 			Create(null, 1, 0, 0, 0, bufferSize);
 		}
 
-		public void Create(Address? address, int peerLimit) {
+		public void Create(Address address, int peerLimit) {
 			Create(address, peerLimit, 0);
 		}
 
-		public void Create(Address? address, int peerLimit, int channelLimit) {
+		public void Create(Address address, int peerLimit, int channelLimit) {
 			Create(address, peerLimit, channelLimit, 0, 0, 0);
 		}
 
@@ -481,11 +488,11 @@ namespace ENet {
 			Create(null, peerLimit, channelLimit, incomingBandwidth, outgoingBandwidth, 0);
 		}
 
-		public void Create(Address? address, int peerLimit, int channelLimit, uint incomingBandwidth, uint outgoingBandwidth) {
+		public void Create(Address address, int peerLimit, int channelLimit, uint incomingBandwidth, uint outgoingBandwidth) {
 			Create(address, peerLimit, channelLimit, incomingBandwidth, outgoingBandwidth, 0);
 		}
 
-		public void Create(Address? address, int peerLimit, int channelLimit, uint incomingBandwidth, uint outgoingBandwidth, int bufferSize) {
+		public void Create(Address address, int peerLimit, int channelLimit, uint incomingBandwidth, uint outgoingBandwidth, int bufferSize) {
 			if (nativeHost != IntPtr.Zero)
 				throw new InvalidOperationException("Host already created");
 
@@ -495,7 +502,7 @@ namespace ENet {
 			CheckChannelLimit(channelLimit);
 
 			if (address != null) {
-				var nativeAddress = address.Value.NativeData;
+				var nativeAddress = address.NativeData;
 
 				nativeHost = Native.enet_host_create(ref nativeAddress, (IntPtr)peerLimit, (IntPtr)channelLimit, incomingBandwidth, outgoingBandwidth, bufferSize);
 			} else {
@@ -506,53 +513,11 @@ namespace ENet {
 				throw new InvalidOperationException("Host creation call failed");
 		}
 
-		public void EnableCompression() {
-			CheckCreated();
-
-			Native.enet_host_enable_compression(nativeHost);
-		}
-
-		public void PreventConnections(bool state) {
-			CheckCreated();
-
-			Native.enet_host_prevent_connections(nativeHost, (byte)(state ? 1 : 0));
-		}
-
 		public void Broadcast(byte channelID, ref Packet packet) {
 			CheckCreated();
 
 			packet.CheckCreated();
 			Native.enet_host_broadcast(nativeHost, channelID, packet.NativeData);
-			packet.NativeData = IntPtr.Zero;
-		}
-
-		public void Broadcast(byte channelID, ref Packet packet, Peer excludedPeer) {
-			CheckCreated();
-
-			packet.CheckCreated();
-			Native.enet_host_broadcast_exclude(nativeHost, channelID, packet.NativeData, excludedPeer.NativeData);
-			packet.NativeData = IntPtr.Zero;
-		}
-
-		public void Broadcast(byte channelID, ref Packet packet, Peer[] peers) {
-			CheckCreated();
-
-			packet.CheckCreated();
-
-			if (peers.Length > 0) {
-				IntPtr[] nativePeers = ArrayPool.GetPointerBuffer();
-				int nativeCount = 0;
-
-				for (int i = 0; i < peers.Length; i++) {
-					if (peers[i].NativeData != IntPtr.Zero) {
-						nativePeers[nativeCount] = peers[i].NativeData;
-						nativeCount++;
-					}
-				}
-
-				Native.enet_host_broadcast_selective(nativeHost, channelID, packet.NativeData, nativePeers, (IntPtr)nativeCount);
-			}
-
 			packet.NativeData = IntPtr.Zero;
 		}
 
@@ -687,15 +652,6 @@ namespace ENet {
 				return Native.enet_peer_get_port(nativePeer);
 			}
 		}
-
-		public uint MTU {
-			get {
-				CheckCreated();
-
-				return Native.enet_peer_get_mtu(nativePeer);
-			}
-		}
-
 		public PeerState State {
 			get {
 				return nativePeer == IntPtr.Zero ? PeerState.Uninitialized : Native.enet_peer_get_state(nativePeer);
@@ -707,22 +663,6 @@ namespace ENet {
 				CheckCreated();
 
 				return Native.enet_peer_get_rtt(nativePeer);
-			}
-		}
-
-		public uint LastSendTime {
-			get {
-				CheckCreated();
-
-				return Native.enet_peer_get_lastsendtime(nativePeer);
-			}
-		}
-
-		public uint LastReceiveTime {
-			get {
-				CheckCreated();
-
-				return Native.enet_peer_get_lastreceivetime(nativePeer);
 			}
 		}
 
@@ -775,12 +715,6 @@ namespace ENet {
 		internal void CheckCreated() {
 			if (nativePeer == IntPtr.Zero)
 				throw new InvalidOperationException("Peer not created");
-		}
-
-		public void ConfigureThrottle(uint interval, uint acceleration, uint deceleration, uint threshold) {
-			CheckCreated();
-
-			Native.enet_peer_throttle_configure(nativePeer, interval, acceleration, deceleration, threshold);
 		}
 
 		public bool Send(byte channelID, ref Packet packet) {
@@ -916,16 +850,16 @@ namespace ENet {
 		internal static extern uint enet_time_get();
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern int enet_address_set_ip(ref ENetAddress address, string ip);
+		internal static extern int enet_address_set_host_ip(ref ENetAddress address, string ip);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern int enet_address_set_hostname(ref ENetAddress address, string hostName);
+		internal static extern int enet_address_set_host(ref ENetAddress address, string hostName);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern int enet_address_get_ip(ENetAddress address, StringBuilder ip, IntPtr ipLength);
+		internal static extern int enet_address_get_host_ip(ENetAddress address, byte[] ip, IntPtr ipLength);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern int enet_address_get_hostname(ENetAddress address, StringBuilder hostName, IntPtr nameLength);
+		internal static extern int enet_address_get_host(ENetAddress address, byte[] hostName, IntPtr nameLength);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
 		internal static extern IntPtr enet_packet_create(byte[] data, IntPtr dataLength, PacketFlags flags);
@@ -940,9 +874,6 @@ namespace ENet {
 		internal static extern IntPtr enet_packet_create_offset(IntPtr data, IntPtr dataLength, IntPtr dataOffset, PacketFlags flags);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern int enet_packet_check_references(IntPtr packet);
-
-		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
 		internal static extern IntPtr enet_packet_get_data(IntPtr packet);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
@@ -952,7 +883,7 @@ namespace ENet {
 		internal static extern void enet_packet_set_free_callback(IntPtr packet, IntPtr callback);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern void enet_packet_dispose(IntPtr packet);
+		internal static extern void enet_packet_destroy(IntPtr packet);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
 		internal static extern IntPtr enet_host_create(ref ENetAddress address, IntPtr peerLimit, IntPtr channelLimit, uint incomingBandwidth, uint outgoingBandwidth, int bufferSize);
@@ -965,12 +896,6 @@ namespace ENet {
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
 		internal static extern void enet_host_broadcast(IntPtr host, byte channelID, IntPtr packet);
-
-		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern void enet_host_broadcast_exclude(IntPtr host, byte channelID, IntPtr packet, IntPtr excludedPeer);
-
-		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern void enet_host_broadcast_selective(IntPtr host, byte channelID, IntPtr packet, IntPtr[] peers, IntPtr peersLength);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
 		internal static extern int enet_host_service(IntPtr host, out ENetEvent @event, uint timeout);
@@ -1006,13 +931,7 @@ namespace ENet {
 		internal static extern void enet_host_destroy(IntPtr host);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern void enet_host_enable_compression(IntPtr host);
-
-		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern void enet_host_prevent_connections(IntPtr host, byte state);
-
-		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern void enet_peer_throttle_configure(IntPtr peer, uint interval, uint acceleration, uint deceleration, uint threshold);
+		internal static extern void enet_peer_throttle_configure(IntPtr peer, uint interval, uint acceleration, uint deceleration);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
 		internal static extern uint enet_peer_get_id(IntPtr peer);
@@ -1024,19 +943,10 @@ namespace ENet {
 		internal static extern ushort enet_peer_get_port(IntPtr peer);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern uint enet_peer_get_mtu(IntPtr peer);
-
-		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
 		internal static extern PeerState enet_peer_get_state(IntPtr peer);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
 		internal static extern uint enet_peer_get_rtt(IntPtr peer);
-
-		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern uint enet_peer_get_lastsendtime(IntPtr peer);
-
-		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
-		internal static extern uint enet_peer_get_lastreceivetime(IntPtr peer);
 
 		[DllImport(nativeLibrary, CallingConvention = CallingConvention.Cdecl)]
 		internal static extern ulong enet_peer_get_packets_sent(IntPtr peer);
